@@ -186,6 +186,7 @@ namespace CapriDesktop
         [DataMember] public bool QuickHands;
         [DataMember] public bool Bypass;
         [DataMember] public bool Translate;
+        [DataMember] public bool ReplyEnglish;
 
         [OnDeserializing]
         private void Defaults(StreamingContext context)
@@ -853,6 +854,7 @@ namespace CapriDesktop
             Brain.Nickname = Brain.Nick(preferences.Nickname).Length == 0 ? null : Brain.Nick(preferences.Nickname);
             Brain.Wordiness = Math.Max(0, Math.Min(2, preferences.Wordiness));
             Brain.Translating = preferences.Translate;
+            Brain.Answering = preferences.ReplyEnglish && !preferences.Translate;
             Brain.Recall = preferences.Recall == 16 || preferences.Recall == 32 ? preferences.Recall : 8;
             if (!smoke) brain.Load(Path.Combine(data, "chat.json"));
             Voice.Loudness = Math.Max(0, Math.Min(150, preferences.Volume));
@@ -2266,7 +2268,21 @@ namespace CapriDesktop
         internal void ToggleTranslate()
         {
             Brain.Translating = !Brain.Translating;
+            if (Brain.Translating) Brain.Answering = false;
             preferences.Translate = Brain.Translating;
+            preferences.ReplyEnglish = Brain.Answering;
+            SavePreferences();
+        }
+
+        internal bool Answering { get { return Brain.Answering; } }
+
+        internal void ToggleEnglishReplies()
+        {
+            Brain.Answering = !Brain.Answering;
+            if (Brain.Answering) Brain.Translating = false;
+            preferences.ReplyEnglish = Brain.Answering;
+            preferences.Translate = Brain.Translating;
+            brain.Forget();
             SavePreferences();
         }
 
@@ -5129,7 +5145,11 @@ namespace CapriDesktop
             if (!box.Visible && box.Opened < 0) box.Opened = now;
             box.State = talkState;
             box.Heard = heard;
-            box.Reply = talkState == TalkState.Thinking ? (working ?? (slowWarned ? (brain.Remote != null ? "Still thinking. Waiting for " + brain.Remote.Company + "." : SlowLocal) : null)) : reply;
+            string thinking = working ?? (slowWarned ? (brain.Remote != null ? "Still thinking. Waiting for " + brain.Remote.Company + "." : SlowLocal) : null);
+            int spent = brain.Spent;
+            int reused = brain.Cached;
+            string spend = spent > 0 ? (brain.Guessing ? "~" : "") + Brain.Tokens(spent) + (reused > 0 ? ", " + Brain.Short(reused) + " cached" : "") : null;
+            box.Reply = talkState == TalkState.Thinking ? (spend == null ? thinking : thinking == null ? spend : thinking + " · " + spend) : reply;
             box.Revealed = revealed;
             float s = TalkScale();
             Point head = Head();
@@ -8036,9 +8056,10 @@ namespace CapriDesktop
                                 bool translatingBefore = Brain.Translating;
                                 Brain.Ollama = FakeServer(new string[]
                                 {
-                                    "{\"message\":{\"role\":\"assistant\",\"content\":\"How are you?\"},\"done_reason\":\"stop\"}",
-                                    "{\"message\":{\"role\":\"assistant\",\"content\":\"Benissimo, choom.\"},\"done_reason\":\"stop\"}",
-                                    "{\"message\":{\"role\":\"assistant\",\"content\":\"Ciao.\"},\"done_reason\":\"stop\"}"
+                                    "{\"message\":{\"role\":\"assistant\",\"content\":\"How are you?\"},\"done_reason\":\"stop\",\"prompt_eval_count\":10,\"eval_count\":4}",
+                                    "{\"message\":{\"role\":\"assistant\",\"content\":\"Benissimo, choom.\"},\"done_reason\":\"stop\",\"prompt_eval_count\":30,\"eval_count\":6}",
+                                    "{\"message\":{\"role\":\"assistant\",\"content\":\"Ciao.\"},\"done_reason\":\"stop\"}",
+                                    "{\"message\":{\"role\":\"assistant\",\"content\":\"Doing great.\"},\"done_reason\":\"stop\"}"
                                 }, translateAsked, out translateFake);
                                 try
                                 {
@@ -8047,19 +8068,34 @@ namespace CapriDesktop
                                     Brain translator = new Brain();
                                     translator.Model = "gemma4:e4b";
                                     string translatedReply = translator.Ask("Come stai?");
+                                    int translatedSpent = translator.Spent;
+                                    bool translatedGuessing = translator.Guessing;
                                     Brain.Translating = false;
                                     string untranslatedReply = translator.Ask("Ciao");
+                                    Brain.Answering = true;
+                                    string englishReply = translator.Ask("Come va?");
+                                    Brain.Answering = false;
                                     string[] translateSent;
                                     lock (translateAsked) translateSent = translateAsked.ToArray();
-                                    if (translatedReply != "Benissimo, choom." || untranslatedReply != "Ciao." || translateSent.Length != 3 || translateSent[0].IndexOf("from Italian to English", StringComparison.Ordinal) < 0 || translateSent[0].IndexOf("Come stai?", StringComparison.Ordinal) < 0 || translateSent[1].IndexOf("How are you?", StringComparison.Ordinal) < 0 || translateSent[1].IndexOf("Come stai?", StringComparison.Ordinal) >= 0 || translateSent[1].IndexOf("Always reply in Italian", StringComparison.Ordinal) < 0 || translateSent[2].IndexOf("Translate the user's message", StringComparison.Ordinal) >= 0)
+                                    if (translatedSpent != 50 || translatedGuessing || englishReply != "Doing great." || translateSent.Length != 4 || translateSent[3].IndexOf("Come va?", StringComparison.Ordinal) < 0 || translateSent[3].IndexOf("Always reply in English", StringComparison.Ordinal) < 0 || translateSent[3].IndexOf("Always reply in Italian", StringComparison.Ordinal) >= 0 || translateSent[3].IndexOf("Translate the user's message", StringComparison.Ordinal) >= 0)
+                                        throw new Exception("Token counts or English replies went wrong: " + translatedSpent + " / " + englishReply + " / " + translateSent.Length);
+                                    CodeReply coded = Brain.Coded("{\"type\":\"result\",\"is_error\":false,\"result\":\"Hi.\",\"usage\":{\"input_tokens\":5,\"cache_read_input_tokens\":100,\"output_tokens\":7}}");
+                                    if (coded.Result != "Hi." || coded.Failed || coded.Usage == null || coded.Usage.Total != 112 || Brain.Tokens(950) != "950 tokens" || Brain.Tokens(1240) != "1.2k tokens" || Brain.Tokens(25600) != "26k tokens")
+                                        throw new Exception("Claude Code's reply or token count was read wrong.");
+                                    string movedLines;
+                                    string steadyPrompt = Brain.Steady(Brain.Persona + "\nThe earlier messages are from your last chat with them, a day ago." + Hands.Chat + Brain.Now(), out movedLines);
+                                    string movedNone;
+                                    if (steadyPrompt.IndexOf("Right now it's", StringComparison.Ordinal) >= 0 || steadyPrompt.IndexOf("The earlier messages", StringComparison.Ordinal) >= 0 || steadyPrompt.IndexOf(Brain.Machinery.Substring(0, 40), StringComparison.Ordinal) < 0 || !movedLines.StartsWith("The earlier messages are from your last chat", StringComparison.Ordinal) || movedLines.IndexOf("\nRight now it's ", StringComparison.Ordinal) < 0 || Brain.Steady("Same.", out movedNone) != "Same." || movedNone.Length != 0)
+                                        throw new Exception("Claude Code's prompt kept the clock in its cached part: " + movedLines);
+                                    if (translatedReply != "Benissimo, choom." || untranslatedReply != "Ciao." || translateSent[0].IndexOf("from Italian to English", StringComparison.Ordinal) < 0 || translateSent[0].IndexOf("Come stai?", StringComparison.Ordinal) < 0 || translateSent[1].IndexOf("How are you?", StringComparison.Ordinal) < 0 || translateSent[1].IndexOf("Come stai?", StringComparison.Ordinal) >= 0 || translateSent[1].IndexOf("Always reply in Italian", StringComparison.Ordinal) < 0 || translateSent[2].IndexOf("Translate the user's message", StringComparison.Ordinal) >= 0)
                                         throw new Exception("Translating to English went wrong: " + translatedReply + " / " + untranslatedReply + " / " + translateSent.Length);
                                     System.Collections.Generic.List<string> haikuAsked = new System.Collections.Generic.List<string>();
                                     System.Net.Sockets.TcpListener haikuFake;
                                     string anthropicBefore = Brain.Anthropic;
                                     Brain.Anthropic = FakeServer(new string[]
                                     {
-                                        "{\"content\":[{\"type\":\"text\",\"text\":\"How are you?\"}],\"stop_reason\":\"end_turn\"}",
-                                        "{\"content\":[{\"type\":\"text\",\"text\":\"Benissimo, choom.\"}],\"stop_reason\":\"end_turn\"}"
+                                        "{\"content\":[{\"type\":\"text\",\"text\":\"How are you?\"}],\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}",
+                                        "{\"content\":[{\"type\":\"text\",\"text\":\"Benissimo, choom.\"}],\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":40,\"output_tokens\":8,\"cache_read_input_tokens\":20}}"
                                     }, haikuAsked, out haikuFake);
                                     try
                                     {
@@ -8070,7 +8106,7 @@ namespace CapriDesktop
                                         string paidReply = paid.Ask("Come stai?");
                                         string[] haikuSent;
                                         lock (haikuAsked) haikuSent = haikuAsked.ToArray();
-                                        if (paidReply != "Benissimo, choom." || haikuSent.Length != 2 || haikuSent[0].IndexOf("\"model\":\"claude-haiku-5-5\"", StringComparison.Ordinal) < 0 || haikuSent[0].IndexOf("\"effort\":\"low\"", StringComparison.Ordinal) < 0 || haikuSent[1].IndexOf("\"model\":\"claude-opus-5-5\"", StringComparison.Ordinal) < 0)
+                                        if (paidReply != "Benissimo, choom." || paid.Spent != 83 || paid.Cached != 20 || haikuSent.Length != 2 || haikuSent[0].IndexOf("\"model\":\"claude-haiku-5-5\"", StringComparison.Ordinal) < 0 || haikuSent[0].IndexOf("\"effort\":\"low\"", StringComparison.Ordinal) < 0 || haikuSent[1].IndexOf("\"model\":\"claude-opus-5-5\"", StringComparison.Ordinal) < 0)
                                             throw new Exception("Translating did not use Haiku on low effort: " + paidReply + " / " + haikuSent.Length);
                                     }
                                     finally
@@ -8085,8 +8121,10 @@ namespace CapriDesktop
                                     Brain.Ollama = brainUrl;
                                     Brain.Language = spokenBefore;
                                     Brain.Translating = translatingBefore;
+                                    Brain.Answering = false;
                                 }
-                                checks.Add("PASS translate to English: with it on, what they say in their language goes to her brain in English first, translated by Haiku on low effort whatever Claude model is picked, and she still replies in their language; with it off nothing is translated");
+                                checks.Add("PASS translate to English: with it on, what they say in their language goes to her brain in English first, translated by Haiku on low effort whatever Claude model is picked, and she still replies in their language; with it off nothing is translated; Always reply in English sends their words as they are and asks for an English reply");
+                                checks.Add("PASS token count: Ollama, Claude API and Claude Code replies add their real token usage to her thinking bubble, a request still waiting shows a ~ guess, cached tokens are shown apart, big counts read like 1.2k tokens, and Claude Code gets the clock and last-chat lines in the message so her prompt stays cached");
                                 Func<string, string> realFetch = Hands.Fetch;
                                 Func<System.Collections.Generic.List<OpenWindow>> realWindows = Hands.Windows;
                                 Func<OpenWindow, string, bool> realSteer = Hands.Steer;
@@ -9316,7 +9354,7 @@ namespace CapriDesktop
                                     thinkingSince = clock.Elapsed.TotalSeconds - 30;
                                     CheckSlow(clock.Elapsed.TotalSeconds);
                                     if (!slowWarned || mainframe.Status.IndexOf("free NVIDIA key", StringComparison.Ordinal) < 0) throw new Exception("A slow brain did not point to the free NVIDIA key: " + mainframe.Status);
-                                    if (box.Reply != SlowLocal) throw new Exception("A slow local brain left her bubble blank: " + box.Reply);
+                                    if (!(box.Reply ?? "").StartsWith(SlowLocal, StringComparison.Ordinal)) throw new Exception("A slow local brain left her bubble blank: " + box.Reply);
                                     slowWarned = false;
                                     CheckSlow(clock.Elapsed.TotalSeconds);
                                     if (slowWarned) throw new Exception("The local slow-brain hint repeated.");
@@ -9328,7 +9366,7 @@ namespace CapriDesktop
                                     thinkingSince = clock.Elapsed.TotalSeconds - 9;
                                     int waitingTicket = asking;
                                     CheckSlow(clock.Elapsed.TotalSeconds);
-                                    if (!slowWarned || box.State != TalkState.Thinking || box.Reply != "Still thinking. Waiting for NVIDIA." || mainframe.Status.IndexOf("Waiting for NVIDIA", StringComparison.Ordinal) < 0 || asking != waitingTicket || replyDone >= 0) throw new Exception("A slow cloud reply stayed blank or ended its turn.");
+                                    if (!slowWarned || box.State != TalkState.Thinking || !(box.Reply ?? "").StartsWith("Still thinking. Waiting for NVIDIA.", StringComparison.Ordinal) || mainframe.Status.IndexOf("Waiting for NVIDIA", StringComparison.Ordinal) < 0 || asking != waitingTicket || replyDone >= 0) throw new Exception("A slow cloud reply stayed blank or ended its turn.");
                                     Begin(asking, "Here now.", TalkState.Talking, null);
                                     UpdateTalk(clock.Elapsed.TotalSeconds);
                                     if (slowWarned || !double.IsNaN(thinkingSince) || box.Reply != "Here now." || mainframe.Status.IndexOf("Waiting for", StringComparison.Ordinal) >= 0) throw new Exception("The real reply did not clear the waiting hint.");
@@ -9341,7 +9379,7 @@ namespace CapriDesktop
                                     replyDone = -1;
                                     thinkingSince = clock.Elapsed.TotalSeconds - 9;
                                     CheckSlow(clock.Elapsed.TotalSeconds);
-                                    if (!slowWarned || box.Reply != "Still thinking. Waiting for NVIDIA.") throw new Exception("Free voice chat hid the cloud hint.");
+                                    if (!slowWarned || !(box.Reply ?? "").StartsWith("Still thinking. Waiting for NVIDIA.", StringComparison.Ordinal)) throw new Exception("Free voice chat hid the cloud hint.");
                                     chatting = wasChatting;
                                     local = wasLocal;
                                     CloseTalk();

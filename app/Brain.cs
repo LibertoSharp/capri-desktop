@@ -67,6 +67,28 @@ namespace CapriDesktop
         [DataMember(Name = "message")] public ChatMessage Message;
         [DataMember(Name = "error")] public string Error;
         [DataMember(Name = "done_reason")] public string Stopped;
+        [DataMember(Name = "prompt_eval_count")] public int Read;
+        [DataMember(Name = "eval_count")] public int Written;
+    }
+
+    [DataContract]
+    internal sealed class TokenUsage
+    {
+        [DataMember(Name = "prompt_tokens")] public int Prompt;
+        [DataMember(Name = "completion_tokens")] public int Completion;
+        [DataMember(Name = "input_tokens")] public int Input;
+        [DataMember(Name = "output_tokens")] public int Output;
+        [DataMember(Name = "cache_read_input_tokens")] public int Cached;
+        [DataMember(Name = "cache_creation_input_tokens")] public int Stored;
+        internal int Total { get { return Prompt + Completion + Input + Output + Cached + Stored; } }
+    }
+
+    [DataContract]
+    internal sealed class CodeReply
+    {
+        [DataMember(Name = "result")] public string Result;
+        [DataMember(Name = "is_error")] public bool Failed;
+        [DataMember(Name = "usage")] public TokenUsage Usage;
     }
 
     [DataContract]
@@ -95,6 +117,7 @@ namespace CapriDesktop
     internal sealed class CompletionReply
     {
         [DataMember(Name = "choices")] public CompletionChoice[] Choices;
+        [DataMember(Name = "usage")] public TokenUsage Usage;
     }
 
     [DataContract]
@@ -188,6 +211,7 @@ namespace CapriDesktop
     {
         [DataMember(Name = "content")] public ClaudeBlock[] Content;
         [DataMember(Name = "stop_reason")] public string StopReason;
+        [DataMember(Name = "usage")] public TokenUsage Usage;
         internal string Raw;
     }
 
@@ -468,7 +492,9 @@ namespace CapriDesktop
         internal static string Speech()
         {
             string language = Language;
-            return string.IsNullOrEmpty(language) || language == "English" ? "" : "\nAlways reply in " + language + ", whatever language they use. Keep your Night City slang words as they are.";
+            if (string.IsNullOrEmpty(language) || language == "English") return "";
+            if (Answering) return "\nThey talk to you in " + language + ". Always reply in English, whatever language they use.";
+            return "\nAlways reply in " + language + ", whatever language they use. Keep your Night City slang words as they are.";
         }
 
         private static string Longer()
@@ -686,6 +712,8 @@ namespace CapriDesktop
         internal string Ask(string text)
         {
             grade = Grade(text);
+            System.Threading.Interlocked.Exchange(ref spent, 0);
+            System.Threading.Interlocked.Exchange(ref cached, 0);
             Learn(text);
             int ticket;
             lock (gate) ticket = cancelled;
@@ -823,6 +851,7 @@ namespace CapriDesktop
         }
 
         internal static volatile bool Translating;
+        internal static volatile bool Answering;
 
         private string English(string model, string text, int ticket)
         {
@@ -1117,15 +1146,46 @@ namespace CapriDesktop
                 for (int i = 1; i < messages.Count - 1; i++) talk.Append(messages[i].Role == "assistant" ? "You: " : "Them: ").Append(messages[i].Content).Append('\n');
                 asked = talk.Append("\nTheir new message:\n").Append(asked).ToString();
             }
+            string moved;
+            string steady = Steady(messages[0].Content, out moved);
+            if (moved.Length > 0) asked = moved + "\n\n" + asked;
             string system = Path.GetTempFileName();
+            int guess = (steady.Length + asked.Length) / 4;
+            System.Threading.Interlocked.Add(ref guessed, guess);
             try
             {
-                File.WriteAllText(system, messages[0].Content ?? "");
-                string said = RunClaudeCode("-p --model " + (quick ? "haiku --effort low" : remote.Model == "auto" ? grade ?? "haiku" : remote.Model) + " --system-prompt-file \"" + system + "\" --tools \"\" --setting-sources project --strict-mcp-config --no-session-persistence --output-format text", asked, 120000);
+                File.WriteAllText(system, steady);
+                CodeReply reply = Coded(RunClaudeCode("-p --model " + (quick ? "haiku --effort low" : remote.Model == "auto" ? grade ?? "haiku" : remote.Model) + " --system-prompt-file \"" + system + "\" --tools \"\" --setting-sources project --strict-mcp-config --no-session-persistence --output-format json", asked, 120000));
+                Count(reply);
                 Check(ticket);
-                return said.Trim();
+                if (reply.Failed || string.IsNullOrWhiteSpace(reply.Result)) throw new BrainException(string.IsNullOrWhiteSpace(reply.Result) ? "Claude Code sent an empty reply. Try again." : reply.Result.Trim(), true);
+                return reply.Result.Trim();
             }
-            finally { try { File.Delete(system); } catch (IOException) { } }
+            finally
+            {
+                System.Threading.Interlocked.Add(ref guessed, -guess);
+                try { File.Delete(system); } catch (IOException) { }
+            }
+        }
+
+        private static readonly Regex Changing = new Regex(@"^(Right now it's |The earlier messages are from ).*$", RegexOptions.Multiline);
+
+        internal static string Steady(string system, out string moved)
+        {
+            string text = (system ?? "").Replace("\r\n", "\n");
+            List<string> lines = new List<string>();
+            foreach (Match line in Changing.Matches(text)) lines.Add(line.Value.TrimEnd());
+            moved = string.Join("\n", lines.ToArray());
+            return lines.Count == 0 ? text : Regex.Replace(Changing.Replace(text, ""), @"\n{2,}", "\n").Trim();
+        }
+
+        internal static CodeReply Coded(string json)
+        {
+            try
+            {
+                using (MemoryStream data = new MemoryStream(Encoding.UTF8.GetBytes(json))) return (CodeReply)new DataContractJsonSerializer(typeof(CodeReply)).ReadObject(data) ?? new CodeReply();
+            }
+            catch (SerializationException) { return new CodeReply { Result = json }; }
         }
 
         internal static string RunClaudeCode(string arguments, string input, int wait)
@@ -1193,7 +1253,9 @@ namespace CapriDesktop
                 Sign(request, remote.Key, true);
                 if (fallback) request.Headers["anthropic-beta"] = "server-side-fallback-2026-07-01";
             }, null, ticket);
-            return Parsed(text);
+            ClaudeReply driven = Parsed(text);
+            Count(driven);
+            return driven;
         }
 
         internal static ClaudeReply Parsed(string text)
@@ -1519,6 +1581,8 @@ namespace CapriDesktop
                 payload = Encoding.UTF8.GetBytes(json);
             }
             lock (gate) { Check(ticket); active.Add(request); }
+            int guess = payload.Length / 4;
+            System.Threading.Interlocked.Add(ref guessed, guess);
             System.Diagnostics.Stopwatch took = System.Diagnostics.Stopwatch.StartNew();
             int expired = 0;
             using (System.Threading.Timer timer = new System.Threading.Timer(delegate
@@ -1539,6 +1603,7 @@ namespace CapriDesktop
                         if (typeof(T) == typeof(string)) using (StreamReader text = new StreamReader(incoming, Encoding.UTF8)) reply = (T)(object)text.ReadToEnd();
                         else reply = (T)new DataContractJsonSerializer(typeof(T)).ReadObject(incoming);
                         if (System.Threading.Interlocked.CompareExchange(ref expired, 0, 0) != 0) throw new WebException("The reply took too long.", WebExceptionStatus.Timeout);
+                        Count(reply);
                         return reply;
                     }
                 }
@@ -1560,7 +1625,40 @@ namespace CapriDesktop
                 if (web != null && web.Status != WebExceptionStatus.RequestCanceled) Log(url, took.ElapsedMilliseconds, web.Status.ToString());
                 throw;
             }
-            finally { lock (gate) active.Remove(request); }
+            finally
+            {
+                lock (gate) active.Remove(request);
+                System.Threading.Interlocked.Add(ref guessed, -guess);
+            }
+        }
+
+        private int spent, guessed;
+
+        internal int Spent { get { return spent + guessed; } }
+
+        internal bool Guessing { get { return guessed > 0; } }
+
+        private void Count(object reply)
+        {
+            ChatReply chat = reply as ChatReply;
+            CompletionReply done = reply as CompletionReply;
+            ClaudeReply claude = reply as ClaudeReply;
+            CodeReply code = reply as CodeReply;
+            TokenUsage usage = done != null ? done.Usage : claude != null ? claude.Usage : code != null ? code.Usage : null;
+            int used = chat != null ? chat.Read + chat.Written : usage != null ? usage.Total : 0;
+            System.Threading.Interlocked.Add(ref spent, used);
+            if (usage != null) System.Threading.Interlocked.Add(ref cached, usage.Cached);
+        }
+
+        private int cached;
+
+        internal int Cached { get { return cached; } }
+
+        internal static string Tokens(int count) { return Short(count) + " tokens"; }
+
+        internal static string Short(int count)
+        {
+            return count < 1000 ? count.ToString(System.Globalization.CultureInfo.InvariantCulture) : (count / 1000.0).ToString(count < 10000 ? "0.0" : "0", System.Globalization.CultureInfo.InvariantCulture) + "k";
         }
 
         private static BrainException Problem(WebException error, bool remote)

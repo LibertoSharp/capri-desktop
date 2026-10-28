@@ -139,6 +139,8 @@ namespace CapriDesktop
         private bool paged;
         private readonly Key languages;
         private readonly ContextMenuStrip languageMenu;
+        private readonly ToolStripMenuItem translateItem;
+        private readonly ToolStripMenuItem englishItem;
         private readonly Slider volume;
         private readonly Label volumeName;
         private readonly Slider sounds;
@@ -319,7 +321,10 @@ namespace CapriDesktop
                 item.Tag = picked;
                 languageMenu.Items.Add(item);
             }
-            languageMenu.Items.Add(Choice("Translate what I say to English", false, delegate { capri.ToggleTranslate(); Sync(); }));
+            translateItem = Choice("Translate what I say to English", false, delegate { capri.ToggleTranslate(); Sync(); });
+            languageMenu.Items.Add(translateItem);
+            englishItem = Choice("Always reply in English (no translating)", false, delegate { capri.ToggleEnglishReplies(); Sync(); });
+            languageMenu.Items.Add(englishItem);
             languages = Make("English", 128, 80, 228, 28, delegate { languageMenu.Show(languages, new Point(0, languages.Height)); });
             languages.Chevron = true;
             languages.AccessibleName = "Her language";
@@ -703,9 +708,10 @@ namespace CapriDesktop
             string language = capri.Language;
             foreach (ToolStripMenuItem item in languageMenu.Items)
             {
-                if (item.Tag == null) { item.Checked = capri.Translating; continue; }
+                if (item == translateItem) { item.Checked = capri.Translating; continue; }
+                if (item == englishItem) { item.Checked = capri.Answering; continue; }
                 item.Checked = (string)item.Tag == language;
-                if (item.Checked) languages.Text = item.Text + (capri.Translating && language != "English" ? " > English" : "");
+                if (item.Checked) languages.Text = item.Text + (language == "English" ? "" : capri.Translating ? " > English" : capri.Answering ? " · EN replies" : "");
             }
             languages.Invalidate();
             int loud = 0;
