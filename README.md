@@ -63,6 +63,8 @@ Beware that Capri may try to take over your human CPU. We take no responsibility
 2. In the Capri Mainframe, press **Set up her brain**, or press **Free key** to use a free NVIDIA key
 3. Optional: paste an ElevenLabs key so she can talk. Make the key with **Restrict key** turned off
 
+Have Claude Pro or Max? Install [Claude Code](https://claude.com/claude-code), run `claude` once to log in, then type `claude-code` in the key box instead of a key and press **Connect**. Pick **sonnet** or **opus** after. She can't watch your screen this way.
+
 Stuck? The [setup guide](https://lachydotmcg.github.io/capri-desktop/setup/) walks through it, or ask in the [Discord](https://discord.gg/F4fDHfGtFk).
 
 Windows or your antivirus may warn you because it's a new app. All the code is here.

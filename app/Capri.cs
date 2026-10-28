@@ -3754,7 +3754,7 @@ namespace CapriDesktop
         internal void ConnectText(string key)
         {
             key = (key ?? "").Trim();
-            if (Cloud.KindOf(key) == null) { mainframe.ShowProblem("That isn't an NVIDIA, OpenAI, Claude or DeepSeek key."); return; }
+            if (Cloud.KindOf(key) == null) { mainframe.ShowProblem("That isn't an NVIDIA, OpenAI, Claude or DeepSeek key, or claude-code."); return; }
             ListCloud(key, true);
         }
 
@@ -8768,7 +8768,7 @@ namespace CapriDesktop
                                     Brain.Anthropic = cloudUrl;
                                     Brain.DeepSeek = cloudUrl;
                                     Brain.Nvidia = cloudUrl;
-                                    if (Cloud.KindOf("sk-ant-api03-x") != "anthropic" || Cloud.KindOf("nvapi-x") != "nvidia" || Cloud.KindOf("sk-" + "0123456789abcdef0123456789abcdef") != "deepseek" || Cloud.KindOf("sk-proj-x") != "openai" || Cloud.KindOf("sk-AbCdEf0123456789abcdef0123456789T3Blbk" + "FJ0123456789ab") != "openai" || Cloud.KindOf("hello") != null) throw new Exception("API keys were sorted wrong.");
+                                    if (Cloud.KindOf("sk-ant-api03-x") != "anthropic" || Cloud.KindOf("nvapi-x") != "nvidia" || Cloud.KindOf("sk-" + "0123456789abcdef0123456789abcdef") != "deepseek" || Cloud.KindOf("sk-proj-x") != "openai" || Cloud.KindOf("sk-AbCdEf0123456789abcdef0123456789T3Blbk" + "FJ0123456789ab") != "openai" || Cloud.KindOf("hello") != null || Cloud.KindOf("claude-code") != "claudecode" || Cloud.KindOf("Claude-Code") != "claudecode") throw new Exception("API keys were sorted wrong.");
                                     System.Collections.Generic.List<string> claudeModels = Brain.CloudModels("sk-ant-test");
                                     if (string.Join(",", claudeModels.ToArray()) != "claude-haiku-5-5,claude-opus-5-5" || Brain.DefaultCloudModel("anthropic", claudeModels) != "claude-opus-5-5") throw new Exception("Claude models were read wrong: " + string.Join(",", claudeModels.ToArray()));
                                     Brain cloudy = new Brain();
@@ -8911,7 +8911,7 @@ namespace CapriDesktop
                                     Brain.Nvidia = realNvidia;
                                     cloudFake.Stop();
                                 }
-                                checks.Add("PASS API brain: sorts NVIDIA, OpenAI, Claude and DeepSeek keys, reads their model lists, picks defaults, sends each provider's request shape with tools, runs their tool calls, handles a refusal, and shows the brain tiers: NORMAL (free, local, start with this), HIGHER (free NVIDIA key) and MAX INTELLIGENCE (ChatGPT or Claude key), one at a time, each with its own saved key, an old key moving to its tier, and a tier without its key running her own brain");
+                                checks.Add("PASS API brain: sorts NVIDIA, OpenAI, Claude and DeepSeek keys and claude-code for a Claude plan, reads their model lists, picks defaults, sends each provider's request shape with tools, runs their tool calls, handles a refusal, and shows the brain tiers: NORMAL (free, local, start with this), HIGHER (free NVIDIA key) and MAX INTELLIGENCE (ChatGPT or Claude key), one at a time, each with its own saved key, an old key moving to its tier, and a tier without its key running her own brain");
                                 System.Collections.Generic.List<string> quickAsked = new System.Collections.Generic.List<string>();
                                 System.Net.Sockets.TcpListener quickFake;
                                 Brain.Nvidia = FakeServer(new string[]

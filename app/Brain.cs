@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Runtime.Serialization;
@@ -222,11 +223,14 @@ namespace CapriDesktop
         internal volatile string Model;
         internal Cloud(string key, string model) { Key = key; Kind = KindOf(key); Model = model; }
         internal bool Claude { get { return Kind == "anthropic"; } }
-        internal string Name { get { return Kind == "anthropic" ? "Claude" : Kind == "deepseek" ? "DeepSeek" : Kind == "nvidia" ? "NVIDIA" : "ChatGPT"; } }
-        internal string Company { get { return Kind == "anthropic" ? "Anthropic" : Kind == "deepseek" ? "DeepSeek" : Kind == "nvidia" ? "NVIDIA" : "OpenAI"; } }
+        internal string Name { get { return Kind == "anthropic" || Kind == "claudecode" ? "Claude" : Kind == "deepseek" ? "DeepSeek" : Kind == "nvidia" ? "NVIDIA" : "ChatGPT"; } }
+        internal string Company { get { return Kind == "anthropic" ? "Anthropic" : Kind == "claudecode" ? "Claude Code" : Kind == "deepseek" ? "DeepSeek" : Kind == "nvidia" ? "NVIDIA" : "OpenAI"; } }
+
+        internal const string Subscription = "claude-code";
 
         internal static string KindOf(string key)
         {
+            if (string.Equals(key, Subscription, StringComparison.OrdinalIgnoreCase)) return "claudecode";
             if (key.StartsWith("sk-ant-", StringComparison.Ordinal)) return "anthropic";
             if (key.StartsWith("nvapi-", StringComparison.Ordinal)) return "nvidia";
             if (Regex.IsMatch(key, "^sk-[0-9a-f]{32}$")) return "deepseek";
@@ -597,6 +601,7 @@ namespace CapriDesktop
         internal static List<string> CloudModels(string key)
         {
             string kind = Cloud.KindOf(key);
+            if (kind == "claudecode") { RunClaudeCode("--version", null, 30000); return new List<string> { "sonnet", "opus" }; }
             bool claude = kind == "anthropic";
             HttpWebRequest request = Create(Address(kind, "/models") + (claude ? "?limit=100" : ""), 30000);
             Sign(request, key, claude);
@@ -903,6 +908,7 @@ namespace CapriDesktop
             Cloud remote = Remote;
             string listed = tools ? openAiTools ?? Hands.Tools : null;
             if (remote != null && remote.Claude) return AskClaude(remote, messages, tools, calls, parts, ticket, claudeTools);
+            if (remote != null && remote.Kind == "claudecode") return AskClaudeCode(remote, messages, tools, parts, ticket);
             if (remote != null)
             {
                 bool openAi = remote.Kind == "openai";
@@ -1060,6 +1066,65 @@ namespace CapriDesktop
             }, parts, ticket);
             if (reply.StopReason == "refusal") return Declined;
             return Spoken(reply, calls);
+        }
+
+        private string AskClaudeCode(Cloud remote, List<ChatMessage> messages, bool tools, string parts, int ticket)
+        {
+            if (tools) throw new BrainException("Claude Code doesn't support tools here.");
+            if (parts != null) throw new BrainException("Claude Code can't take an image here.");
+            string asked = messages[messages.Count - 1].Content ?? "";
+            if (messages.Count > 2)
+            {
+                StringBuilder talk = new StringBuilder("The chat so far:\n");
+                for (int i = 1; i < messages.Count - 1; i++) talk.Append(messages[i].Role == "assistant" ? "You: " : "Them: ").Append(messages[i].Content).Append('\n');
+                asked = talk.Append("\nTheir new message:\n").Append(asked).ToString();
+            }
+            string system = Path.GetTempFileName();
+            try
+            {
+                File.WriteAllText(system, messages[0].Content ?? "");
+                string said = RunClaudeCode("-p --model " + remote.Model + " --system-prompt-file \"" + system + "\" --tools \"\" --setting-sources project --strict-mcp-config --no-session-persistence --output-format text", asked, 120000);
+                Check(ticket);
+                return said.Trim();
+            }
+            finally { try { File.Delete(system); } catch (IOException) { } }
+        }
+
+        internal static string RunClaudeCode(string arguments, string input, int wait)
+        {
+            bool windows = Path.DirectorySeparatorChar == '\\';
+            ProcessStartInfo start = new ProcessStartInfo(windows ? "cmd.exe" : "claude", windows ? "/d /s /c \"claude " + arguments + "\"" : arguments)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = new UTF8Encoding(false),
+                StandardErrorEncoding = new UTF8Encoding(false),
+                WorkingDirectory = Path.GetTempPath()
+            };
+            using (Process process = Process.Start(start))
+            {
+                System.Threading.Tasks.Task<string> errors = process.StandardError.ReadToEndAsync();
+                System.Threading.Tasks.Task<string> output = process.StandardOutput.ReadToEndAsync();
+                byte[] typed = new UTF8Encoding(false).GetBytes(input ?? "");
+                try { process.StandardInput.BaseStream.Write(typed, 0, typed.Length); process.StandardInput.Close(); }
+                catch (IOException) { }
+                if (!process.WaitForExit(wait))
+                {
+                    try { process.Kill(); } catch (InvalidOperationException) { } catch (System.ComponentModel.Win32Exception) { }
+                    throw new BrainException("Claude Code took too long. Try again.", true);
+                }
+                process.WaitForExit();
+                string said = output.Result, problem = (errors.Result + " " + said).Trim();
+                if (process.ExitCode == 0 && said.Trim().Length > 0) return said;
+                Log("claude " + arguments.Split(' ')[0], process.ExitCode, problem);
+                if (Regex.IsMatch(problem, "not recognized|cannot find", RegexOptions.IgnoreCase)) throw new BrainException("Claude Code isn't installed. Install it from claude.com/claude-code, run claude once to log in, then press Connect again.", true);
+                if (Regex.IsMatch(problem, @"/login|log ?in|not logged|authenticat|api key", RegexOptions.IgnoreCase)) throw new BrainException("Claude Code isn't logged in. Open a terminal, run claude and log in with your Claude account.", true);
+                if (Regex.IsMatch(problem, "usage limit|rate limit|limit reached", RegexOptions.IgnoreCase)) throw new BrainException("Your Claude plan hit its usage limit. Wait for it to reset or pick another brain.", true);
+                throw new BrainException(problem.Length > 0 ? problem : "Claude Code sent an empty reply. Try again.", true);
+            }
         }
 
         private static string Spoken(ClaudeReply reply, List<KeyValuePair<string, ToolArguments>> calls)
