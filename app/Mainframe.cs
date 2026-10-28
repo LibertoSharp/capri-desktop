@@ -319,6 +319,7 @@ namespace CapriDesktop
                 item.Tag = picked;
                 languageMenu.Items.Add(item);
             }
+            languageMenu.Items.Add(Choice("Translate what I say to English", false, delegate { capri.ToggleTranslate(); Sync(); }));
             languages = Make("English", 128, 80, 228, 28, delegate { languageMenu.Show(languages, new Point(0, languages.Height)); });
             languages.Chevron = true;
             languages.AccessibleName = "Her language";
@@ -702,8 +703,9 @@ namespace CapriDesktop
             string language = capri.Language;
             foreach (ToolStripMenuItem item in languageMenu.Items)
             {
+                if (item.Tag == null) { item.Checked = capri.Translating; continue; }
                 item.Checked = (string)item.Tag == language;
-                if (item.Checked) languages.Text = item.Text;
+                if (item.Checked) languages.Text = item.Text + (capri.Translating && language != "English" ? " > English" : "");
             }
             languages.Invalidate();
             int loud = 0;
@@ -822,6 +824,8 @@ namespace CapriDesktop
 
         private int KeyRow { get { return tier > 0 ? 128 : 94; } }
 
+        internal const string PlanHint = "Claude Pro or Max? Type claude-code below.";
+
         internal void ShowTiers(int pick, string nvidiaTail, string paidTail)
         {
             tier = Math.Max(0, Math.Min(rungs.Length - 1, pick));
@@ -831,7 +835,7 @@ namespace CapriDesktop
             string tail = tier == 1 ? nvidiaTail : tier == 2 ? paidTail : null;
             textSaved = tail != null;
             textEntry.Box.AccessibleName = tier == 1 ? "NVIDIA API key" : "OpenAI, Anthropic or DeepSeek API key";
-            tierNote.Text = tier == 1 ? "Most NVIDIA models can't see your screen." : "Pick one. Only one brain runs at a time.";
+            tierNote.Text = tier == 1 ? "Most NVIDIA models can't see your screen." : tier == 2 && !textSaved ? PlanHint : "Pick one. Only one brain runs at a time.";
             textEntry.Cue = textSaved ? (tier == 1 ? "NVIDIA key saved, ends " : "Key saved, ends ") + tail : tier == 1 ? "Paste your free NVIDIA key" : "Paste a ChatGPT or Claude key";
             RelabelText();
             Arrange(expanded);

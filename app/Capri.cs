@@ -185,6 +185,7 @@ namespace CapriDesktop
         [DataMember] public bool StartupSet;
         [DataMember] public bool QuickHands;
         [DataMember] public bool Bypass;
+        [DataMember] public bool Translate;
 
         [OnDeserializing]
         private void Defaults(StreamingContext context)
@@ -851,6 +852,7 @@ namespace CapriDesktop
             PointEars();
             Brain.Nickname = Brain.Nick(preferences.Nickname).Length == 0 ? null : Brain.Nick(preferences.Nickname);
             Brain.Wordiness = Math.Max(0, Math.Min(2, preferences.Wordiness));
+            Brain.Translating = preferences.Translate;
             Brain.Recall = preferences.Recall == 16 || preferences.Recall == 32 ? preferences.Recall : 8;
             if (!smoke) brain.Load(Path.Combine(data, "chat.json"));
             Voice.Loudness = Math.Max(0, Math.Min(150, preferences.Volume));
@@ -2257,6 +2259,15 @@ namespace CapriDesktop
             brain.Forget();
             SavePreferences();
             PointEars();
+        }
+
+        internal bool Translating { get { return Brain.Translating; } }
+
+        internal void ToggleTranslate()
+        {
+            Brain.Translating = !Brain.Translating;
+            preferences.Translate = Brain.Translating;
+            SavePreferences();
         }
 
         internal string Nickname { get { return Brain.Nickname ?? ""; } }
@@ -8019,6 +8030,63 @@ namespace CapriDesktop
                                     junkFake.Stop();
                                     Brain.Ollama = brainUrl;
                                 }
+                                System.Collections.Generic.List<string> translateAsked = new System.Collections.Generic.List<string>();
+                                System.Net.Sockets.TcpListener translateFake;
+                                string spokenBefore = Brain.Language;
+                                bool translatingBefore = Brain.Translating;
+                                Brain.Ollama = FakeServer(new string[]
+                                {
+                                    "{\"message\":{\"role\":\"assistant\",\"content\":\"How are you?\"},\"done_reason\":\"stop\"}",
+                                    "{\"message\":{\"role\":\"assistant\",\"content\":\"Benissimo, choom.\"},\"done_reason\":\"stop\"}",
+                                    "{\"message\":{\"role\":\"assistant\",\"content\":\"Ciao.\"},\"done_reason\":\"stop\"}"
+                                }, translateAsked, out translateFake);
+                                try
+                                {
+                                    Brain.Language = "Italian";
+                                    Brain.Translating = true;
+                                    Brain translator = new Brain();
+                                    translator.Model = "gemma4:e4b";
+                                    string translatedReply = translator.Ask("Come stai?");
+                                    Brain.Translating = false;
+                                    string untranslatedReply = translator.Ask("Ciao");
+                                    string[] translateSent;
+                                    lock (translateAsked) translateSent = translateAsked.ToArray();
+                                    if (translatedReply != "Benissimo, choom." || untranslatedReply != "Ciao." || translateSent.Length != 3 || translateSent[0].IndexOf("from Italian to English", StringComparison.Ordinal) < 0 || translateSent[0].IndexOf("Come stai?", StringComparison.Ordinal) < 0 || translateSent[1].IndexOf("How are you?", StringComparison.Ordinal) < 0 || translateSent[1].IndexOf("Come stai?", StringComparison.Ordinal) >= 0 || translateSent[1].IndexOf("Always reply in Italian", StringComparison.Ordinal) < 0 || translateSent[2].IndexOf("Translate the user's message", StringComparison.Ordinal) >= 0)
+                                        throw new Exception("Translating to English went wrong: " + translatedReply + " / " + untranslatedReply + " / " + translateSent.Length);
+                                    System.Collections.Generic.List<string> haikuAsked = new System.Collections.Generic.List<string>();
+                                    System.Net.Sockets.TcpListener haikuFake;
+                                    string anthropicBefore = Brain.Anthropic;
+                                    Brain.Anthropic = FakeServer(new string[]
+                                    {
+                                        "{\"content\":[{\"type\":\"text\",\"text\":\"How are you?\"}],\"stop_reason\":\"end_turn\"}",
+                                        "{\"content\":[{\"type\":\"text\",\"text\":\"Benissimo, choom.\"}],\"stop_reason\":\"end_turn\"}"
+                                    }, haikuAsked, out haikuFake);
+                                    try
+                                    {
+                                        Brain.Translating = true;
+                                        Brain paid = new Brain();
+                                        paid.Remote = new Cloud("sk-ant-test", "claude-opus-5-5");
+                                        paid.Model = "claude-opus-5-5";
+                                        string paidReply = paid.Ask("Come stai?");
+                                        string[] haikuSent;
+                                        lock (haikuAsked) haikuSent = haikuAsked.ToArray();
+                                        if (paidReply != "Benissimo, choom." || haikuSent.Length != 2 || haikuSent[0].IndexOf("\"model\":\"claude-haiku-5-5\"", StringComparison.Ordinal) < 0 || haikuSent[0].IndexOf("\"effort\":\"low\"", StringComparison.Ordinal) < 0 || haikuSent[1].IndexOf("\"model\":\"claude-opus-5-5\"", StringComparison.Ordinal) < 0)
+                                            throw new Exception("Translating did not use Haiku on low effort: " + paidReply + " / " + haikuSent.Length);
+                                    }
+                                    finally
+                                    {
+                                        haikuFake.Stop();
+                                        Brain.Anthropic = anthropicBefore;
+                                    }
+                                }
+                                finally
+                                {
+                                    translateFake.Stop();
+                                    Brain.Ollama = brainUrl;
+                                    Brain.Language = spokenBefore;
+                                    Brain.Translating = translatingBefore;
+                                }
+                                checks.Add("PASS translate to English: with it on, what they say in their language goes to her brain in English first, translated by Haiku on low effort whatever Claude model is picked, and she still replies in their language; with it off nothing is translated");
                                 Func<string, string> realFetch = Hands.Fetch;
                                 Func<System.Collections.Generic.List<OpenWindow>> realWindows = Hands.Windows;
                                 Func<OpenWindow, string, bool> realSteer = Hands.Steer;
@@ -8781,6 +8849,7 @@ namespace CapriDesktop
                                     Brain.DeepSeek = cloudUrl;
                                     Brain.Nvidia = cloudUrl;
                                     if (Cloud.KindOf("sk-ant-api03-x") != "anthropic" || Cloud.KindOf("nvapi-x") != "nvidia" || Cloud.KindOf("sk-" + "0123456789abcdef0123456789abcdef") != "deepseek" || Cloud.KindOf("sk-proj-x") != "openai" || Cloud.KindOf("sk-AbCdEf0123456789abcdef0123456789T3Blbk" + "FJ0123456789ab") != "openai" || Cloud.KindOf("hello") != null || Cloud.KindOf("claude-code") != "claudecode" || Cloud.KindOf("Claude-Code") != "claudecode") throw new Exception("API keys were sorted wrong.");
+                                    if (Brain.Grade("hey, how's it going?") != "haiku" || Brain.Grade("open spotify") != "haiku" || Brain.Grade("Explain how black holes form") != "sonnet" || Brain.Grade("write me a poem about rain") != "sonnet" || Brain.Grade("think hard about which GPU I should buy") != "opus" || Brain.Grade(new string('a', 700)) != "opus") throw new Exception("Claude plan models were graded wrong.");
                                     System.Collections.Generic.List<string> claudeModels = Brain.CloudModels("sk-ant-test");
                                     if (string.Join(",", claudeModels.ToArray()) != "claude-haiku-5-5,claude-opus-5-5" || Brain.DefaultCloudModel("anthropic", claudeModels) != "claude-opus-5-5") throw new Exception("Claude models were read wrong: " + string.Join(",", claudeModels.ToArray()));
                                     Brain cloudy = new Brain();
@@ -8898,7 +8967,7 @@ namespace CapriDesktop
                                         checks.Add("PASS NVIDIA sight note: with HIGHER picked, the line under BRAIN says most NVIDIA models can't see your screen");
                                         preferences.PaidKey = null;
                                         ChooseTier(2);
-                                        if (preferences.Tier != 2 || brain.Remote != null || preferences.TextKey != null || !mainframe.TextStatus.EndsWith("| Paste a ChatGPT or Claude key | Connect", StringComparison.Ordinal) || !mainframe.TiersFit) throw new Exception("MAX INTELLIGENCE without its key did not fall back to her own brain: " + mainframe.TextStatus);
+                                        if (preferences.Tier != 2 || brain.Remote != null || preferences.TextKey != null || !mainframe.TextStatus.EndsWith("| Paste a ChatGPT or Claude key | Connect", StringComparison.Ordinal) || mainframe.TierNote != Mainframe.PlanHint || mainframe.Overlap() != null || !mainframe.TiersFit) throw new Exception("MAX INTELLIGENCE without its key did not fall back to her own brain: " + mainframe.TextStatus);
                                     }
                                     finally
                                     {
@@ -8923,7 +8992,7 @@ namespace CapriDesktop
                                     Brain.Nvidia = realNvidia;
                                     cloudFake.Stop();
                                 }
-                                checks.Add("PASS API brain: sorts NVIDIA, OpenAI, Claude and DeepSeek keys and claude-code for a Claude plan, reads their model lists, picks defaults, sends each provider's request shape with tools, runs their tool calls, handles a refusal, and shows the brain tiers: NORMAL (free, local, start with this), HIGHER (free NVIDIA key) and MAX INTELLIGENCE (ChatGPT or Claude key), one at a time, each with its own saved key, an old key moving to its tier, and a tier without its key running her own brain");
+                                checks.Add("PASS API brain: sorts NVIDIA, OpenAI, Claude and DeepSeek keys and claude-code for a Claude plan (auto picks haiku for chat, sonnet for harder asks and jobs, opus for think hard or very long asks), reads their model lists, picks defaults, sends each provider's request shape with tools, runs their tool calls, handles a refusal, and shows the brain tiers: NORMAL (free, local, start with this), HIGHER (free NVIDIA key) and MAX INTELLIGENCE (ChatGPT or Claude key), one at a time, each with its own saved key, an old key moving to its tier, a tier without its key running her own brain, and MAX INTELLIGENCE without a key saying to type claude-code for a Claude plan");
                                 System.Collections.Generic.List<string> quickAsked = new System.Collections.Generic.List<string>();
                                 System.Net.Sockets.TcpListener quickFake;
                                 Brain.Nvidia = FakeServer(new string[]

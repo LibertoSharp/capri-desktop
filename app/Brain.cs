@@ -601,7 +601,7 @@ namespace CapriDesktop
         internal static List<string> CloudModels(string key)
         {
             string kind = Cloud.KindOf(key);
-            if (kind == "claudecode") { RunClaudeCode("--version", null, 30000); return new List<string> { "sonnet", "opus" }; }
+            if (kind == "claudecode") { RunClaudeCode("--version", null, 30000); return new List<string> { "auto", "haiku", "sonnet", "opus" }; }
             bool claude = kind == "anthropic";
             HttpWebRequest request = Create(Address(kind, "/models") + (claude ? "?limit=100" : ""), 30000);
             Sign(request, key, claude);
@@ -685,11 +685,14 @@ namespace CapriDesktop
 
         internal string Ask(string text)
         {
+            grade = Grade(text);
             Learn(text);
             int ticket;
             lock (gate) ticket = cancelled;
             string model = Model;
             if (model == null) throw new BrainException(Offline);
+            text = English(model, text, ticket);
+            grade = Grade(text);
             Func<string, ToolArguments, string> act = Act;
             List<ChatMessage> messages = new List<ChatMessage>();
             messages.Add(new ChatMessage("system", Character + Remembered() + Gap() + (act != null ? Hands.Chat : "") + Now()));
@@ -819,6 +822,29 @@ namespace CapriDesktop
             return said;
         }
 
+        internal static volatile bool Translating;
+
+        private string English(string model, string text, int ticket)
+        {
+            string language = Language;
+            if (!Translating || string.IsNullOrEmpty(language) || language == "English" || text.Trim().Length == 0) return text;
+            List<ChatMessage> asking = new List<ChatMessage>
+            {
+                new ChatMessage("system", "Translate the user's message from " + language + " to English. Reply with only the translation. Keep names, song titles, app names and slang words as they are."),
+                new ChatMessage("user", text)
+            };
+            quick = true;
+            try
+            {
+                string said = Clean(Think(model, asking, false, new List<KeyValuePair<string, ToolArguments>>(), null, 200, ticket));
+                return said.Length > 0 ? said : text;
+            }
+            catch (BrainException) { return text; }
+            finally { quick = false; }
+        }
+
+        [ThreadStatic] private static bool quick;
+
         private string Reach(string model, string text, List<ChatMessage> recent, List<KeyValuePair<string, ToolArguments>> calls, int ticket)
         {
             Cloud remote = Remote;
@@ -846,6 +872,7 @@ namespace CapriDesktop
 
         internal string See(byte[] jpeg, string system, string instruction, int limit)
         {
+            grade = null;
             int ticket;
             lock (gate) ticket = cancelled;
             string model = Model;
@@ -882,6 +909,7 @@ namespace CapriDesktop
 
         internal string Step(string system, string user, string tools, string claudeTools, string listing, List<KeyValuePair<string, ToolArguments>> calls)
         {
+            grade = "sonnet";
             int ticket;
             lock (gate) ticket = cancelled;
             string model = Model;
@@ -1049,7 +1077,7 @@ namespace CapriDesktop
 
         private string AskClaude(Cloud remote, List<ChatMessage> messages, bool tools, List<KeyValuePair<string, ToolArguments>> calls, string parts = null, int ticket = -1, string claudeTools = null)
         {
-            string model = remote.Model;
+            string model = quick ? "claude-haiku-5-5" : remote.Model;
             bool fallback = Regex.IsMatch(model, @"^claude-(opus-5|sonnet-5-5|fable-5-1)");
             ClaudeRequest body = new ClaudeRequest
             {
@@ -1068,6 +1096,16 @@ namespace CapriDesktop
             return Spoken(reply, calls);
         }
 
+        [ThreadStatic] private static string grade;
+
+        internal static string Grade(string asked)
+        {
+            string text = asked ?? "";
+            if (text.Length > 600 || Regex.IsMatch(text, @"\b(think (hard|harder|deeply|carefully)|deep dive|in depth|in detail|use opus)\b", RegexOptions.IgnoreCase)) return "opus";
+            if (text.Length > 160 || text.IndexOf('\n') >= 0 || Regex.IsMatch(text, @"\b(explain|why|how (do|does|did|can|could|would|should|to)|plan|write|code|script|program|debug|fix|compare|analy[sz]e|summari[sz]e|translate|calculate|solve|step[- ]by[- ]step|essay|story|poem|research|pros and cons|difference between|help me|use sonnet)\b", RegexOptions.IgnoreCase)) return "sonnet";
+            return "haiku";
+        }
+
         private string AskClaudeCode(Cloud remote, List<ChatMessage> messages, bool tools, string parts, int ticket)
         {
             if (tools) throw new BrainException("Claude Code doesn't support tools here.");
@@ -1083,7 +1121,7 @@ namespace CapriDesktop
             try
             {
                 File.WriteAllText(system, messages[0].Content ?? "");
-                string said = RunClaudeCode("-p --model " + remote.Model + " --system-prompt-file \"" + system + "\" --tools \"\" --setting-sources project --strict-mcp-config --no-session-persistence --output-format text", asked, 120000);
+                string said = RunClaudeCode("-p --model " + (quick ? "haiku --effort low" : remote.Model == "auto" ? grade ?? "haiku" : remote.Model) + " --system-prompt-file \"" + system + "\" --tools \"\" --setting-sources project --strict-mcp-config --no-session-persistence --output-format text", asked, 120000);
                 Check(ticket);
                 return said.Trim();
             }
