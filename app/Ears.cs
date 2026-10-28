@@ -53,6 +53,7 @@ namespace CapriDesktop
         internal event Action<short[]> Heard;
         internal event Action<double> Level;
         internal volatile bool Muted;
+        internal volatile int Gain = 100;
         internal volatile string Chosen;
         private IntPtr device;
         private IntPtr[] headers;
@@ -219,6 +220,8 @@ namespace CapriDesktop
 
         internal void Feed(short[] chunk)
         {
+            int gain = Gain;
+            if (gain != 100) for (int i = 0; i < chunk.Length; i++) chunk[i] = (short)Math.Max(short.MinValue, Math.Min(short.MaxValue, chunk[i] * gain / 100));
             Action<double> level = Level;
             if (level != null) level(Muted ? 0 : Speaker.Loudness(chunk, 0, chunk.Length));
             Action<short[]> heard = Heard;

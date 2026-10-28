@@ -162,6 +162,7 @@ namespace CapriDesktop
         [DataMember] public int Recall = 8;
         [DataMember] public int Volume = 100;
         [DataMember] public int Sounds = 60;
+        [DataMember] public int MicGain = 100;
         [DataMember] public int SleepAfter = 120;
         [DataMember] public bool NoIntro;
         [DataMember] public bool NoDiscord;
@@ -194,6 +195,7 @@ namespace CapriDesktop
             Recall = 8;
             Volume = 100;
             Sounds = 60;
+            MicGain = 100;
             SleepAfter = 120;
             BubbleTime = 1;
             TalkMods = 3;
@@ -843,6 +845,7 @@ namespace CapriDesktop
             presence = new Presence(Assembly.GetExecutingAssembly().GetName().Version.ToString(3));
             preferences = smoke ? new Preferences() : LoadPreferences();
             ears.Chosen = preferences.Mic;
+            ears.Gain = Math.Max(25, Math.Min(300, preferences.MicGain));
             kokoro.Style = LocalVoice.Find(preferences.VoiceStyle);
             Brain.Language = Brain.LanguageCode(preferences.Language) == "en" ? null : preferences.Language;
             PointEars();
@@ -2315,6 +2318,15 @@ namespace CapriDesktop
         }
 
         internal int SoundLevel { get { return Sfx.Level; } }
+
+        internal int MicGain { get { return ears.Gain; } }
+
+        internal void SetMicGain(int percent)
+        {
+            ears.Gain = Math.Max(25, Math.Min(300, percent));
+            preferences.MicGain = ears.Gain;
+            SavePreferences();
+        }
 
         internal int SleepAfter { get { return preferences.SleepAfter; } }
 
@@ -9916,6 +9928,15 @@ namespace CapriDesktop
                             ChooseMic(null);
                             if (preferences.Mic != null || ears.Chosen != null) throw new Exception("Default mic did not clear the pick.");
                             checks.Add("PASS mic list (" + found.Count + " found) with full names, a saved pick, and a missing mic falls back to the default");
+                            short[] boosted = { 1000, 20000, -20000 };
+                            using (Ears gained = new Ears()) { gained.Gain = 200; gained.Feed(boosted); }
+                            short[] quieted = { 1000, -1000 };
+                            using (Ears gained = new Ears()) { gained.Gain = 50; gained.Feed(quieted); }
+                            SetMicGain(500);
+                            bool gainCapped = ears.Gain == 300 && preferences.MicGain == 300;
+                            SetMicGain(100);
+                            if (boosted[0] != 2000 || boosted[1] != short.MaxValue || boosted[2] != short.MinValue || quieted[0] != 500 || quieted[1] != -500 || !gainCapped || ears.Gain != 100 || preferences.MicGain != 100) throw new Exception("Mic volume was applied wrong: " + string.Join(",", Array.ConvertAll(boosted, x => x.ToString())) + " / " + string.Join(",", Array.ConvertAll(quieted, x => x.ToString())));
+                            checks.Add("PASS mic volume: the Mic slider turns her hearing down to 25% or up to 300%, loud sound clips instead of wrapping, and it's saved");
                             string freeSetupText = kokoro.Installed ? "-" : "Get free voice";
                             if (mainframe.FreeStatus != "Free voice: Her own | " + freeSetupText) throw new Exception("Free voice row did not show without a key: " + mainframe.FreeStatus);
                             if (mainframe.Overlap() != null) throw new Exception("The free voice row overlaps: " + mainframe.Overlap());
